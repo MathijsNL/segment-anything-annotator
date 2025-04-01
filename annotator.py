@@ -1,46 +1,44 @@
-import sys
+import argparse
+import base64
 import functools
-import cv2
 import glob
-import os
-import os.path as osp
-import imgviz
 import html
 import json
 import math
-import argparse
-import numpy as np
+import os
+import os.path as osp
+import sys
 import tempfile
-import torch
-import base64
+import time
+import warnings
+from collections import namedtuple
+from pathlib import Path
 
-from PyQt5.QtWidgets import QWidget, QApplication, QMainWindow, QApplication, QPushButton, QLabel, QFileDialog, QProgressBar, QComboBox, QScrollArea, QDockWidget, QMessageBox
-from PyQt5.QtGui import QPixmap, QIcon, QImage
+import cv2
+import imgviz
+import numpy as np
+import torch
+from labelme import PY2
+from labelme.label_file import LabelFile, LabelFileError
+from labelme.widgets import (LabelDialog, LabelListWidget, LabelListWidgetItem,
+                             ToolBar, UniqueLabelQListWidget, ZoomWidget)
+from PIL import Image
 from PyQt5.Qt import QSize
+from PyQt5.QtGui import QIcon, QImage, QPixmap
+from PyQt5.QtWidgets import (QApplication, QComboBox, QDockWidget, QFileDialog,
+                             QLabel, QMainWindow, QMessageBox, QProgressBar,
+                             QPushButton, QScrollArea, QWidget)
+from qtpy import QtCore, QtGui, QtWidgets
 from qtpy.QtCore import Qt
-from qtpy import QtCore
-from qtpy import QtGui, QtWidgets
-from canvas import Canvas
+from sam2.sam2_image_predictor import SAM2ImagePredictor
+from segment_anything import SamPredictor, sam_model_registry
+
 import utils
+from canvas import Canvas
+from shape import Shape
 from utils.download_model import download_model
 
-from labelme.widgets import ToolBar, UniqueLabelQListWidget, LabelDialog, LabelListWidget, LabelListWidgetItem, ZoomWidget
-from labelme import PY2
-from labelme.label_file import LabelFile
-from labelme.label_file import LabelFileError
-
-
-from shape import Shape
-
-from PIL import Image
-
-from collections import namedtuple
 Click = namedtuple('Click', ['is_positive', 'coords'])
-
-from segment_anything import sam_model_registry, SamPredictor
-
-
-
 
 
 LABEL_COLORMAP = imgviz.label_colormap()
@@ -52,6 +50,8 @@ class MainWindow(QMainWindow):
     def __init__(self, parent=None, global_w=1000, global_h=1800, model_type='vit_b', keep_input_size=True, max_size=1080):
         super(MainWindow, self).__init__(parent)
         self.resize(global_w, global_h)
+        if model_type in ["vit_b", "vit_l", "vit_h"]: self.sam_version = 1
+        if model_type in ["tiny", "small", "base-plus", "large"]: self.sam_version = 2
         self.model_type = model_type
         self.keep_input_size = keep_input_size
         self.max_size = float(max_size)
@@ -708,11 +708,17 @@ class MainWindow(QMainWindow):
             pass
 
     def clickLoadSAM(self):
-        download_model(self.model_type)
-        self.sam = sam_model_registry[self.model_type](checkpoint='{}.pth'.format(self.model_type))
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.sam.to(device=self.device)
-        self.predictor = SamPredictor(self.sam)
+        self.device = "cuda" if torch.cuda.is_available() else "xpu" if hasattr(torch, "xpu") and torch.xpu.is_available() else "cpu"
+
+        if self.sam_version == 1:
+            download_model(self.model_type)
+            self.sam = sam_model_registry[self.model_type](checkpoint='{}.pth'.format(self.model_type))
+            self.sam.to(device=self.device)
+            self.predictor = SamPredictor(self.sam)
+        else:
+            self.predictor = SAM2ImagePredictor.from_pretrained(f"facebook/sam2.1-hiera-{self.model_type}", device=self.device)
+
+        self.setWindowTitle(f'segment-anything-annotator using SAM version {self.sam_version} with model {self.model_type} running on {self.device}')
         self.actions.loadSAM.setEnabled(False)
         #self.actions.autoSeg.setEnabled(True)
         self.actions.promptSeg.setEnabled(True)
@@ -852,14 +858,22 @@ class MainWindow(QMainWindow):
 
         img, _, input_clicks = self.transform_input(img, points=input_clicks)
 
+        start = time.perf_counter()
+
         if self.image_encoded_flag == False:
-            self.predictor.set_image(img)
+            #self.predictor.reset_predictor()
+            self.predictor.set_image(img.copy())
             self.image_encoded_flag = True
         masks, iou_prediction, _ = self.predictor.predict(
             point_coords=input_clicks,
             point_labels=input_types,
             multimask_output=True,
         )
+
+        end = time.perf_counter()
+        elapsed_time = end - start
+        print(f"Elapsed time: {elapsed_time:.3f} seconds")
+
         masks = self.transform_output(masks.astype(np.uint8), (rh,rw))
         
         target_idx = np.argmax(iou_prediction)
@@ -1388,11 +1402,13 @@ def get_parser():
     parser = argparse.ArgumentParser(description="pixel annotator by GroundedSAM")
     parser.add_argument(
         "--app_resolution",
-        default='1000,1600',
+        help="Uses main monitor resolution by default, specify as: height,width (e.g.: 1080,1920)",
     )
     parser.add_argument(
         "--model_type",
         default='vit_b',
+        choices=["vit_b", "vit_l", "vit_h", "tiny", "small", "base-plus", "large"],
+        help="Choose from: vit_b, vit_l, vit_h for SAM1 or tiny, small, base-plus, large for SAM2",
     )
     parser.add_argument(
         "--keep_input_size",
@@ -1407,11 +1423,19 @@ def get_parser():
 
 if __name__ == '__main__':
     parser = get_parser()
-    global_h, global_w = [int(i) for i in parser.parse_args().app_resolution.split(',')]
-    model_type = parser.parse_args().model_type
-    keep_input_size = parser.parse_args().keep_input_size
-    max_size = parser.parse_args().max_size
+    args = parser.parse_args()
+    model_type = args.model_type
+    keep_input_size = args.keep_input_size
+    max_size = args.max_size
     app = QApplication(sys.argv)
+    screen = app.primaryScreen()
+
+    if args.app_resolution:
+        global_h, global_w = [int(i) for i in args.app_resolution.split(',')]
+    else:
+        global_h = screen.size().height()
+        global_w = screen.size().width()
+
     main = MainWindow(global_h=global_h, global_w=global_w, model_type=model_type, keep_input_size=keep_input_size, max_size=max_size)
     main.show()
     sys.exit(app.exec_())
