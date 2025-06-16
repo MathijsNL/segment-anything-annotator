@@ -24,12 +24,13 @@ Any feedback or suggestions are welcomed. We will continuously add features and 
   1. Python>=3.8
   2. [Pytorch](https://pytorch.org/)
   3. pip install -r requirements.txt
+  4. WSL2 requires ```sudo apt install libxcb-xinerama0 libqt5x11extras5``` and ```export QT_QPA_PLATFORM="xcb"```
 
 ## Usage
 ### 1. Start the Annotation Platform
 
 ```
-python annotator.py --app_resolution 1000,1600 --model_type vit_b --keep_input_size True --max_size 720
+python annotator.py
 ```
 `--model_type`: vit_b, vit_l, vit_h
 
