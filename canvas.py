@@ -899,7 +899,7 @@ class Canvas(QtWidgets.QWidget):
             and self.prevMovePoint
             and not self.outOfPixmap(self.prevMovePoint)
         ):
-            p.setPen(QtGui.QColor(0, 0, 0))
+            p.setPen(QtGui.QColor(255, 20, 147))
             p.drawLine(
                 0,
                 int(self.prevMovePoint.y()),
