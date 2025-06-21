@@ -789,7 +789,7 @@ class MainWindow(QMainWindow):
         input_box = np.array([Box[0].x(), Box[0].y(), Box[1].x(), Box[1].y()])
         img, input_box, _ = self.transform_input(img, box=input_box)
         if self.image_encoded_flag == False:
-            self.predictor.set_image(img)
+            self.predictor.set_image(img.copy())
             self.image_encoded_flag = True
         masks, iou_prediction, _ = self.predictor.predict(
             point_coords=None,
