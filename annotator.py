@@ -499,7 +499,7 @@ class MainWindow(QMainWindow):
                 dict(
                     label=s.label.encode("utf-8") if PY2 else s.label,
                     points=[[p.x(), p.y()] for p in s.points],
-                    group_id=str(s.group_id),
+                    group_id=int(s.group_id),
                     description="",
                     shape_type=s.shape_type,
                     flags=s.flags,
